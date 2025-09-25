@@ -1,0 +1,97 @@
+name: Build Windows EXE from Notebook
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [ main ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure notebook filename
+        shell: pwsh
+        run: |
+          if (Test-Path "TRS.ipynb") {
+            Write-Host "Found TRS.ipynb"
+          } elseif (Test-Path "TRS.ipyn") {
+            Write-Host "Found TRS.ipyn, renaming to TRS.ipynb"
+            Rename-Item "TRS.ipyn" "TRS.ipynb"
+          } else {
+            Write-Error "TRS.ipynb (or TRS.ipyn) not found in repo root."
+            exit 1
+          }
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Convert Notebook -> .py
+        run: |
+          jupyter nbconvert --to script TRS.ipynb --output trade_parser_app.py
+
+      - name: Clean notebook artifacts in .py
+        shell: pwsh
+        run: |
+          $p = "trade_parser_app.py"
+          if (!(Test-Path $p)) { Write-Error "trade_parser_app.py not found"; exit 1 }
+          # 删除常见的 IPython/魔法命令行
+          (Get-Content $p) `
+            | Where-Object { $_ -notmatch 'get_ipython\(' -and $_ -notmatch '^%|^!' -and $_ -notmatch 'ipykernel' } `
+            | Set-Content $p -Encoding UTF8
+          # 若没有主入口，则追加一行（你的 tkinter App 类名应为 App）
+          if (-not (Select-String -Path $p -Pattern '__main__')) {
+            Add-Content $p "`nif __name__ == '__main__':`n    App().mainloop()`n"
+          }
+
+      - name: Build (onefile)
+        shell: pwsh
+        run: |
+          $iconArg = ""
+          if (Test-Path "app.ico") { $iconArg = "--icon app.ico" }
+          pyinstaller --noconsole --onefile `
+            --name trade_parser_app `
+            --collect-all pandas --collect-all openpyxl `
+            $iconArg `
+            trade_parser_app.py
+
+      - name: Upload artifact (onefile)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade_parser_app-onefile
+          path: dist/trade_parser_app.exe
+
+      - name: Build (onedir)
+        shell: pwsh
+        run: |
+          $iconArg = ""
+          if (Test-Path "app.ico") { $iconArg = "--icon app.ico" }
+          pyinstaller --noconsole --onedir `
+            --name trade_parser_app `
+            --collect-all pandas --collect-all openpyxl `
+            $iconArg `
+            trade_parser_app.py
+
+      - name: Upload artifact (onedir)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trade_parser_app-onedir
+          path: dist/trade_parser_app/**
